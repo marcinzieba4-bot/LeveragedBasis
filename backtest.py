@@ -226,7 +226,7 @@ def plot(df, stats):
     ax1.set_ylabel("Cumulative USD P&L (per 1 ETH initial collateral)", color=GREY, fontsize=9)
     ax1.legend(loc="upper left", fontsize=8.5, framealpha=0.15, labelcolor=WHITE)
     ax1.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"${x:,.0f}"))
-    style_ax(ax1, f"Cumulative P&L — {N_LOOPS}× ETH Loop (×{leverage_multiplier:.2f} leverage), Delta-Neutral  |  Jan 2020–Mar 2025")
+    style_ax(ax1, f"Cumulative P&L — {N_LOOPS}× ETH Loop (×{leverage_multiplier:.2f} leverage), Delta-Neutral  |  Jan 2022–Mar 2025")
 
     # ── 2. Raw funding rate APR on perp ──────────────────────────────────────
     ax2 = fig.add_subplot(gs[1, 0])
@@ -297,7 +297,7 @@ def plot(df, stats):
              ha="center", va="top", color=WHITE, fontsize=10, fontweight="bold")
 
     metrics = [
-        ("Period",                   f"Jan 2020 – Mar 2025  ({stats['years']:.1f} yrs)"),
+        ("Period",                   f"Jan 2022 – Mar 2025  ({stats['years']:.1f} yrs)"),
         ("Initial collateral",        f"1 ETH  (~${df['price'].iloc[0]:,.0f})"),
         ("Total Funding Income",      f"+${stats['total_funding_usd']:,.0f} per ETH"),
         ("Total Borrow Cost",         f"−${stats['total_borrow_usd']:,.0f} per ETH"),
@@ -335,7 +335,7 @@ def plot(df, stats):
         spine.set_edgecolor("#30363d")
 
     fig.suptitle(
-        "Leveraged ETH Basis Backtest  |  Jan 2020 – Mar 2025",
+        "Leveraged ETH Basis Backtest  |  Jan 2022 – Mar 2025",
         color=WHITE, fontsize=14, fontweight="bold", y=0.995
     )
 
@@ -370,7 +370,7 @@ def print_summary(stats):
     print("  LEVERAGED BASIS STRATEGY — BACKTEST SUMMARY")
     print(f"  {N_LOOPS}× ETH Loop  ·  ×{leverage_multiplier:.2f} leverage  ·  Delta-Neutral via Perp Short")
     print("═" * 68)
-    print(f"  Period              : Jan 2020 – Mar 2025 ({stats['years']:.1f} yr)")
+    print(f"  Period              : Jan 2022 – Mar 2025 ({stats['years']:.1f} yr)")
     print(f"  Total Funding Income: +${stats['total_funding_usd']:,.0f} per ETH")
     print(f"  Total Borrow Cost   : −${stats['total_borrow_usd']:,.0f} per ETH")
     print(f"  Total Net P&L       : +${stats['total_net_usd']:,.0f} per ETH")
