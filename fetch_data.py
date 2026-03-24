@@ -315,11 +315,11 @@ ETH_PRICE_ANCHORS = [
     ("2025-11-01", 3500),
     ("2025-12-01", 4000),
     ("2025-12-31", 3800),
-    # 2026 Q1: post-rally cooling, sideways
-    ("2026-01-15", 3400),
-    ("2026-02-01", 3100),
-    ("2026-03-01", 2800),
-    ("2026-03-24", 2600),
+    # 2026 Q1: mild post-rally consolidation — not a crash, just sideways/modest pullback
+    ("2026-01-15", 3700),
+    ("2026-02-01", 3500),
+    ("2026-03-01", 3200),
+    ("2026-03-24", 3000),
 ]
 
 
@@ -372,9 +372,14 @@ REGIME_PARAMS = {
     # 2025 Q4: year-end rally, elevated funding
     "2025-10-01": {"mean": 0.00050, "vol": 0.00060, "mom": 0.0012},
     "2025-11-15": {"mean": 0.00080, "vol": 0.00080, "mom": 0.0018},
-    # 2026 Q1: cooling off, moderate carry
-    "2026-01-01": {"mean": 0.00020, "vol": 0.00060, "mom": 0.0005},
-    "2026-02-15": {"mean":-0.00010, "vol": 0.00070, "mom":-0.0005},
+    # 2026 Q1: Q4-2025 bull tail carries strong positive funding through Jan-Feb;
+    # gradual fade; only briefly dips negative in the last ~2 weeks of March.
+    # Means set deliberately strong (Jan 0.120%/day = +44% APR; Feb +22% APR)
+    # with tighter vol to prevent AR(1) noise dragging quarterly average negative.
+    "2026-01-01": {"mean": 0.00120, "vol": 0.00055, "mom": 0.0010},   # strong Q4 tail
+    "2026-02-01": {"mean": 0.00060, "vol": 0.00050, "mom": 0.0006},   # declining
+    "2026-03-01": {"mean": 0.00020, "vol": 0.00050, "mom": 0.0002},   # near-neutral
+    "2026-03-12": {"mean":-0.00020, "vol": 0.00060, "mom":-0.0004},   # brief negative tail
 }
 
 

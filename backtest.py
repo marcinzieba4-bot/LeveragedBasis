@@ -330,7 +330,7 @@ def plot(df, stats):
         ("Avg Net Yield (on equity)",      f"{stats['avg_net_apr']:+.1f}% APR"),
         ("Avg Funding APR on equity",      f"{stats['avg_funding_apr']:+.1f}% APR"),
         ("Avg Staking APR on equity",      f"{stats['avg_staking_apr']:+.1f}% APR"),
-        ("Avg Borrow APR on equity",       f"{stats['avg_borrow_apr']:+.1f}% APR"),
+        ("Avg Borrow Cost on equity",       f"{-stats['avg_borrow_apr']:+.1f}% APR  (cost)"),
         ("Sharpe Ratio",                   f"{stats['sharpe']:.2f}"),
         ("Max Drawdown (USD)",             f"${stats['max_drawdown_usd']:,.0f}"),
         ("% Days Profitable",              f"{stats['pct_positive_days']:.1f}%"),
@@ -375,52 +375,60 @@ def print_quarterly_breakdown(df):
     df["year"]    = df["date"].dt.year
     df["quarter"] = df["date"].dt.quarter
 
-    hdr = "─" * 90
+    # ── Legend ─────────────────────────────────────────────────────────────
+    # Funding APR  = annualised funding income on short perp / equity
+    #                POSITIVE when funding rate > 0 (longs pay shorts)
+    #                NEGATIVE when funding rate < 0 (shorts pay longs)
+    # Staking APR  = always positive: 2.7% × ×3.36 leverage / equity ≈ +9.1%
+    # Borrow Cost  = NEGATIVE (cost of USDC borrow on 2.36× leveraged ETH)
+    # Net APR      = Funding + Staking − Borrow  (= Funding + Staking + Borrow Cost)
+    # Total Income = Funding + Staking (gross before borrow deduction)
+    # ──────────────────────────────────────────────────────────────────────
+
+    hdr = "─" * 96
     print(f"\n┌{hdr}┐")
-    print(f"│{'Quarterly Breakdown — All figures as Annualised % on Equity (per 1 stETH collateral)':^90}│")
-    print(f"├{'─'*8}┬{'─'*14}┬{'─'*14}┬{'─'*14}┬{'─'*14}┬{'─'*14}┬{'─'*10}┤")
-    print(f"│{'Quarter':^8}│{'Funding APR':^14}│{'Staking APR':^14}│{'Borrow APR':^14}│{'Net APR':^14}│{'Total Income':^14}│{'Days':^10}│")
-    print(f"├{'─'*8}┼{'─'*14}┼{'─'*14}┼{'─'*14}┼{'─'*14}┼{'─'*14}┼{'─'*10}┤")
+    print(f"│{'Quarterly Breakdown — Annualised % on Equity (per 1 stETH collateral)':^96}│")
+    print(f"│{'  Borrow Cost is shown NEGATIVE (it is a cost). Net = Funding + Staking + Borrow Cost.':^96}│")
+    print(f"├{'─'*8}┬{'─'*14}┬{'─'*14}┬{'─'*15}┬{'─'*14}┬{'─'*14}┬{'─'*10}┤")
+    print(f"│{'Quarter':^8}│{'Funding APR':^14}│{'Staking APR':^14}│{'Borrow Cost':^15}│{'Net APR':^14}│{'Gross Income':^14}│{'Days':^10}│")
+    print(f"├{'─'*8}┼{'─'*14}┼{'─'*14}┼{'─'*15}┼{'─'*14}┼{'─'*14}┼{'─'*10}┤")
 
     for (year, q), g in df.groupby(["year", "quarter"]):
         n_days = len(g)
-        # Annualise each component: sum of daily % × (365/days_in_quarter)
         ann = 365.0 / n_days
-        fund_apr    = g["funding_yield_daily_pct"].sum()  * ann
-        stake_apr   = g["staking_yield_daily_pct"].sum()  * ann
-        borrow_apr  = g["borrow_yield_daily_pct"].sum()   * ann
-        net_apr     = g["net_yield_daily_pct"].sum()      * ann
-        total_income_apr = fund_apr + stake_apr
+        fund_apr    =  g["funding_yield_daily_pct"].sum() * ann
+        stake_apr   =  g["staking_yield_daily_pct"].sum() * ann
+        borrow_cost = -g["borrow_yield_daily_pct"].sum()  * ann   # negative = cost
+        net_apr     =  g["net_yield_daily_pct"].sum()     * ann
+        gross_apr   = fund_apr + stake_apr
 
-        net_color = "+" if net_apr >= 0 else ""
         print(
             f"│ {year}Q{q}  │"
             f" {fund_apr:+10.2f}%  │"
             f" {stake_apr:+10.2f}%  │"
-            f" {borrow_apr:+10.2f}%  │"
+            f" {borrow_cost:+11.2f}%  │"
             f" {net_apr:+10.2f}%  │"
-            f" {total_income_apr:+10.2f}%  │"
+            f" {gross_apr:+10.2f}%  │"
             f"  {n_days:>6}    │"
         )
 
-    print(f"├{'─'*8}┼{'─'*14}┼{'─'*14}┼{'─'*14}┼{'─'*14}┼{'─'*14}┼{'─'*10}┤")
-    # Full-period averages (annualised)
-    ann_all = 365.0 / len(df)
-    fund_all    = df["funding_yield_daily_pct"].sum()  * ann_all
-    stake_all   = df["staking_yield_daily_pct"].sum()  * ann_all
-    borrow_all  = df["borrow_yield_daily_pct"].sum()   * ann_all
-    net_all     = df["net_yield_daily_pct"].sum()      * ann_all
-    income_all  = fund_all + stake_all
+    print(f"├{'─'*8}┼{'─'*14}┼{'─'*14}┼{'─'*15}┼{'─'*14}┼{'─'*14}┼{'─'*10}┤")
+    ann_all  = 365.0 / len(df)
+    fund_all  =  df["funding_yield_daily_pct"].sum() * ann_all
+    stake_all =  df["staking_yield_daily_pct"].sum() * ann_all
+    bor_all   = -df["borrow_yield_daily_pct"].sum()  * ann_all
+    net_all   =  df["net_yield_daily_pct"].sum()     * ann_all
+    gross_all = fund_all + stake_all
     print(
         f"│{'TOTAL':^8}│"
         f" {fund_all:+10.2f}%  │"
         f" {stake_all:+10.2f}%  │"
-        f" {borrow_all:+10.2f}%  │"
+        f" {bor_all:+11.2f}%  │"
         f" {net_all:+10.2f}%  │"
-        f" {income_all:+10.2f}%  │"
+        f" {gross_all:+10.2f}%  │"
         f"  {len(df):>6}    │"
     )
-    print(f"└{'─'*8}┴{'─'*14}┴{'─'*14}┴{'─'*14}┴{'─'*14}┴{'─'*14}┴{'─'*10}┘")
+    print(f"└{'─'*8}┴{'─'*14}┴{'─'*14}┴{'─'*15}┴{'─'*14}┴{'─'*14}┴{'─'*10}┘")
 
 
 def compute_risk_stats(df):
