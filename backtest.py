@@ -39,6 +39,7 @@ PERP_FUNDING_SHARE = 1.0          # fraction of funding we receive (slippage buf
 BORROW_SPREAD      = 0.005        # extra 0.5 % APR added to raw USDC borrow rate
                                   # (protocol fees, gas amortized, etc.)
 FUNDING_TAKE_RATE  = 0.10         # 10% of gross funding goes to protocol/slippage
+STAKING_APR        = 0.027        # stETH staking yield (2.7% APR) on all looped ETH
 
 # ── Leverage math ─────────────────────────────────────────────────────────────
 # After N loops at LTV each, total ETH held = initial × Σ(LTV^k, k=0..N-1)
@@ -94,25 +95,36 @@ def run_backtest():
         * (1 - FUNDING_TAKE_RATE)
     )
 
+    # Daily staking income (stETH yield on full leveraged ETH stack)
+    # All looped ETH earns staking yield (deposited as stETH collateral)
+    df["staking_income_usd"] = (
+        STAKING_APR / 365
+        * leverage_multiplier
+        * INITIAL_ETH
+        * df["price"]
+    )
+
     # Daily USDC borrow cost
     df["daily_borrow_rate"]  = (df["usdc_borrow_apr"] + BORROW_SPREAD) / 365
     df["borrow_cost_usd"]    = df["usdc_borrowed"] * df["daily_borrow_rate"]
 
-    # Net daily P&L
-    df["net_pnl_usd"] = df["funding_income_usd"] - df["borrow_cost_usd"]
+    # Net daily P&L (funding + staking − borrow)
+    df["net_pnl_usd"] = df["funding_income_usd"] + df["staking_income_usd"] - df["borrow_cost_usd"]
 
     # ── Returns as % of net equity (1 ETH × current price) ─────────────────
     # Net equity = collateral value − borrowed value = 1 ETH × price
     # (the looped ETH minus USDC debt nets back to 1 ETH of equity)
     df["equity_usd"] = INITIAL_ETH * df["price"]
 
-    df["net_yield_daily_pct"]      = df["net_pnl_usd"]       / df["equity_usd"] * 100
-    df["funding_yield_daily_pct"]  = df["funding_income_usd"] / df["equity_usd"] * 100
-    df["borrow_yield_daily_pct"]   = df["borrow_cost_usd"]   / df["equity_usd"] * 100
+    df["net_yield_daily_pct"]      = df["net_pnl_usd"]        / df["equity_usd"] * 100
+    df["funding_yield_daily_pct"]  = df["funding_income_usd"]  / df["equity_usd"] * 100
+    df["staking_yield_daily_pct"]  = df["staking_income_usd"]  / df["equity_usd"] * 100
+    df["borrow_yield_daily_pct"]   = df["borrow_cost_usd"]     / df["equity_usd"] * 100
 
     # Annualised view of daily yields (for rolling charts)
     df["net_apr"]     = df["net_yield_daily_pct"]     * 365
     df["funding_apr"] = df["funding_yield_daily_pct"] * 365
+    df["staking_apr"] = df["staking_yield_daily_pct"] * 365
     df["borrow_apr"]  = df["borrow_yield_daily_pct"]  * 365
 
     # Raw funding / borrow APR (for rate-comparison charts)
@@ -122,12 +134,14 @@ def run_backtest():
     # Cumulative USD P&L
     df["cum_net_pnl_usd"]      = df["net_pnl_usd"].cumsum()
     df["cum_funding_usd"]      = df["funding_income_usd"].cumsum()
+    df["cum_staking_usd"]      = df["staking_income_usd"].cumsum()
     df["cum_borrow_usd"]       = df["borrow_cost_usd"].cumsum()
 
     # Cumulative yield-on-equity (compound)
-    df["cum_net_yield_pct"]    = df["net_yield_daily_pct"].cumsum()
-    df["cum_funding_yield_pct"]= df["funding_yield_daily_pct"].cumsum()
-    df["cum_borrow_yield_pct"] = df["borrow_yield_daily_pct"].cumsum()
+    df["cum_net_yield_pct"]     = df["net_yield_daily_pct"].cumsum()
+    df["cum_funding_yield_pct"] = df["funding_yield_daily_pct"].cumsum()
+    df["cum_staking_yield_pct"] = df["staking_yield_daily_pct"].cumsum()
+    df["cum_borrow_yield_pct"]  = df["borrow_yield_daily_pct"].cumsum()
 
     return df
 
@@ -138,11 +152,13 @@ def compute_stats(df):
 
     total_net_usd      = df["cum_net_pnl_usd"].iloc[-1]
     total_funding_usd  = df["cum_funding_usd"].iloc[-1]
+    total_staking_usd  = df["cum_staking_usd"].iloc[-1]
     total_borrow_usd   = df["cum_borrow_usd"].iloc[-1]
 
     # Annualised yield on equity (simple average of daily net_apr)
     avg_net_apr     = df["net_apr"].mean()
     avg_funding_apr = df["funding_apr"].mean()
+    avg_staking_apr = df["staking_apr"].mean()
     avg_borrow_apr  = df["borrow_apr"].mean()
 
     # Raw rate averages (not leveraged)
@@ -168,9 +184,11 @@ def compute_stats(df):
         "years":             years,
         "total_net_usd":     total_net_usd,
         "total_funding_usd": total_funding_usd,
+        "total_staking_usd": total_staking_usd,
         "total_borrow_usd":  total_borrow_usd,
         "avg_net_apr":       avg_net_apr,
         "avg_funding_apr":   avg_funding_apr,
+        "avg_staking_apr":   avg_staking_apr,
         "avg_borrow_apr":    avg_borrow_apr,
         "avg_raw_funding":   avg_raw_funding,
         "avg_raw_borrow":    avg_raw_borrow,
@@ -216,17 +234,19 @@ def plot(df, stats):
     # ── 1. Cumulative USD P&L breakdown ──────────────────────────────────────
     ax1 = fig.add_subplot(gs[0, :])
     ax1.fill_between(dates, df["cum_funding_usd"], 0, alpha=0.20, color=GREEN)
-    ax1.plot(dates, df["cum_funding_usd"],  color=GREEN, lw=1.5,
+    ax1.plot(dates, df["cum_funding_usd"],  color=GREEN,  lw=1.5,
              label=f"Cumulative Funding Income  (+${stats['total_funding_usd']:,.0f})")
-    ax1.plot(dates, -df["cum_borrow_usd"],  color=RED,   lw=1.5,
+    ax1.plot(dates, df["cum_staking_usd"],  color=PURPLE, lw=1.5,
+             label=f"Cumulative Staking Income  (+${stats['total_staking_usd']:,.0f})")
+    ax1.plot(dates, -df["cum_borrow_usd"],  color=RED,    lw=1.5,
              label=f"Cumulative Borrow Cost     (−${stats['total_borrow_usd']:,.0f})")
-    ax1.plot(dates, df["cum_net_pnl_usd"],  color=BLUE,  lw=2.5,
+    ax1.plot(dates, df["cum_net_pnl_usd"],  color=BLUE,   lw=2.5,
              label=f"Net P&L                   (+${stats['total_net_usd']:,.0f}  per 1 ETH collateral)")
     ax1.axhline(0, color=GREY, lw=0.7, linestyle="--")
     ax1.set_ylabel("Cumulative USD P&L (per 1 ETH initial collateral)", color=GREY, fontsize=9)
     ax1.legend(loc="upper left", fontsize=8.5, framealpha=0.15, labelcolor=WHITE)
     ax1.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"${x:,.0f}"))
-    style_ax(ax1, f"Cumulative P&L — {N_LOOPS}× ETH Loop (×{leverage_multiplier:.2f} leverage), Delta-Neutral  |  Jan 2022–Mar 2025")
+    style_ax(ax1, f"Cumulative P&L — {N_LOOPS}× ETH Loop (×{leverage_multiplier:.2f} leverage), Delta-Neutral + stETH (2.7%)  |  Jan 2022–Mar 2025")
 
     # ── 2. Raw funding rate APR on perp ──────────────────────────────────────
     ax2 = fig.add_subplot(gs[1, 0])
@@ -259,20 +279,22 @@ def plot(df, stats):
 
     # ── 4. Net spread on equity ───────────────────────────────────────────────
     ax4 = fig.add_subplot(gs[2, 0])
-    # Net yield APR on equity = funding APR on equity − borrow APR on equity
-    net_apr_roll = df["net_apr"].rolling(30).mean()
+    net_apr_roll     = df["net_apr"].rolling(30).mean()
+    funding_apr_roll = df["funding_apr"].rolling(30).mean()
     ax4.fill_between(dates, df["net_apr"].clip(-200, 600), 0,
                      where=(df["net_apr"] >= 0), alpha=0.18, color=GREEN)
     ax4.fill_between(dates, df["net_apr"].clip(-200, 600), 0,
                      where=(df["net_apr"] < 0),  alpha=0.18, color=RED)
-    ax4.plot(dates, net_apr_roll.clip(-200, 600), color=PURPLE, lw=1.5,
-             label="30-day rolling net APR on equity")
+    ax4.plot(dates, funding_apr_roll.clip(-200, 600), color=GREEN, lw=1.0, alpha=0.7,
+             label=f"30d Funding APR (avg {stats['avg_funding_apr']:+.1f}%)")
+    ax4.plot(dates, net_apr_roll.clip(-200, 600), color=BLUE, lw=1.8,
+             label=f"30d Net APR incl. staking (avg {stats['avg_net_apr']:+.1f}%)")
     ax4.axhline(0, color=GREY, lw=0.7, linestyle="--")
-    ax4.axhline(stats["avg_net_apr"], color=PURPLE, lw=1.0, linestyle=":",
-                label=f"All-time avg  {stats['avg_net_apr']:+.1f}% APR")
-    ax4.set_ylabel("Net Yield APR on Equity (%)", color=GREY, fontsize=9)
+    ax4.axhline(stats["avg_staking_apr"], color=PURPLE, lw=1.0, linestyle=":",
+                label=f"Staking APR on equity  {stats['avg_staking_apr']:+.1f}%")
+    ax4.set_ylabel("APR on Equity (%)", color=GREY, fontsize=9)
     ax4.legend(loc="upper right", fontsize=7.5, framealpha=0.15, labelcolor=WHITE)
-    style_ax(ax4, "Net Yield on Equity = (Funding × Leverage) − (Borrow × Borrowed/Equity)")
+    style_ax(ax4, "Net Yield on Equity = Funding + Staking(2.7% × ×3.36) − Borrow")
 
     # ── 5. ETH Price ──────────────────────────────────────────────────────────
     ax5 = fig.add_subplot(gs[2, 1])
@@ -297,18 +319,19 @@ def plot(df, stats):
              ha="center", va="top", color=WHITE, fontsize=10, fontweight="bold")
 
     metrics = [
-        ("Period",                   f"Jan 2022 – Mar 2025  ({stats['years']:.1f} yrs)"),
-        ("Initial collateral",        f"1 ETH  (~${df['price'].iloc[0]:,.0f})"),
-        ("Total Funding Income",      f"+${stats['total_funding_usd']:,.0f} per ETH"),
-        ("Total Borrow Cost",         f"−${stats['total_borrow_usd']:,.0f} per ETH"),
-        ("Total Net P&L",             f"+${stats['total_net_usd']:,.0f} per ETH"),
-        ("Avg Net Yield (on equity)", f"{stats['avg_net_apr']:+.1f}% APR"),
-        ("Avg ETH Funding APR",       f"{stats['avg_raw_funding']:.1f}%  (raw)"),
-        ("Avg USDC Borrow APR",       f"{stats['avg_raw_borrow']:.1f}%  (incl spread)"),
-        ("Avg Net Spread",            f"{stats['avg_raw_spread']:+.1f}%  (fund − borrow)"),
-        ("Sharpe Ratio",              f"{stats['sharpe']:.2f}"),
-        ("Max Drawdown (USD)",        f"${stats['max_drawdown_usd']:,.0f}"),
-        ("% Days Profitable",         f"{stats['pct_positive_days']:.1f}%"),
+        ("Period",                        f"Jan 2022 – Mar 2025  ({stats['years']:.1f} yrs)"),
+        ("Initial collateral",             f"1 stETH  (~${df['price'].iloc[0]:,.0f})"),
+        ("Total Funding Income",           f"+${stats['total_funding_usd']:,.0f} per ETH"),
+        ("Total Staking Income (2.7%)",    f"+${stats['total_staking_usd']:,.0f} per ETH"),
+        ("Total Borrow Cost",              f"−${stats['total_borrow_usd']:,.0f} per ETH"),
+        ("Total Net P&L",                  f"+${stats['total_net_usd']:,.0f} per ETH"),
+        ("Avg Net Yield (on equity)",      f"{stats['avg_net_apr']:+.1f}% APR"),
+        ("Avg Funding APR on equity",      f"{stats['avg_funding_apr']:+.1f}% APR"),
+        ("Avg Staking APR on equity",      f"{stats['avg_staking_apr']:+.1f}% APR"),
+        ("Avg Borrow APR on equity",       f"{stats['avg_borrow_apr']:+.1f}% APR"),
+        ("Sharpe Ratio",                   f"{stats['sharpe']:.2f}"),
+        ("Max Drawdown (USD)",             f"${stats['max_drawdown_usd']:,.0f}"),
+        ("% Days Profitable",              f"{stats['pct_positive_days']:.1f}%"),
     ]
 
     cols = 3
@@ -345,24 +368,57 @@ def plot(df, stats):
     plt.close()
 
 
-def print_annual_breakdown(df):
+def print_quarterly_breakdown(df):
     df = df.copy()
-    df["year"] = df["date"].dt.year
-    print("\n┌──────────────────────────────────────────────────────────────────────────────────────────┐")
-    print("│                      Annual Breakdown  (USD per 1 ETH initial collateral)               │")
-    print("├────────┬──────────────┬─────────────┬──────────────┬──────────────┬────────────────────┤")
-    print("│  Year  │ Funding Inc. │ Borrow Cost │  Net P&L     │ Avg Fund APR │ Avg USDC Borrow APR│")
-    print("├────────┼──────────────┼─────────────┼──────────────┼──────────────┼────────────────────┤")
+    df["year"]    = df["date"].dt.year
+    df["quarter"] = df["date"].dt.quarter
 
-    for year, g in df.groupby("year"):
-        fund_usd   = g["funding_income_usd"].sum()
-        borrow_usd = g["borrow_cost_usd"].sum()
-        net_usd    = g["net_pnl_usd"].sum()
-        afund      = g["raw_funding_apr"].mean()
-        aborrow    = g["raw_borrow_apr"].mean()
-        print(f"│  {year}  │  ${fund_usd:+9,.0f}   │  ${borrow_usd:8,.0f}  │  ${net_usd:+9,.0f}   │  {afund:8.2f}%   │   {aborrow:8.2f}%          │")
+    hdr = "─" * 90
+    print(f"\n┌{hdr}┐")
+    print(f"│{'Quarterly Breakdown — All figures as Annualised % on Equity (per 1 stETH collateral)':^90}│")
+    print(f"├{'─'*8}┬{'─'*14}┬{'─'*14}┬{'─'*14}┬{'─'*14}┬{'─'*14}┬{'─'*10}┤")
+    print(f"│{'Quarter':^8}│{'Funding APR':^14}│{'Staking APR':^14}│{'Borrow APR':^14}│{'Net APR':^14}│{'Total Income':^14}│{'Days':^10}│")
+    print(f"├{'─'*8}┼{'─'*14}┼{'─'*14}┼{'─'*14}┼{'─'*14}┼{'─'*14}┼{'─'*10}┤")
 
-    print("└────────┴──────────────┴─────────────┴──────────────┴──────────────┴────────────────────┘")
+    for (year, q), g in df.groupby(["year", "quarter"]):
+        n_days = len(g)
+        # Annualise each component: sum of daily % × (365/days_in_quarter)
+        ann = 365.0 / n_days
+        fund_apr    = g["funding_yield_daily_pct"].sum()  * ann
+        stake_apr   = g["staking_yield_daily_pct"].sum()  * ann
+        borrow_apr  = g["borrow_yield_daily_pct"].sum()   * ann
+        net_apr     = g["net_yield_daily_pct"].sum()      * ann
+        total_income_apr = fund_apr + stake_apr
+
+        net_color = "+" if net_apr >= 0 else ""
+        print(
+            f"│ {year}Q{q}  │"
+            f" {fund_apr:+10.2f}%  │"
+            f" {stake_apr:+10.2f}%  │"
+            f" {borrow_apr:+10.2f}%  │"
+            f" {net_apr:+10.2f}%  │"
+            f" {total_income_apr:+10.2f}%  │"
+            f"  {n_days:>6}    │"
+        )
+
+    print(f"├{'─'*8}┼{'─'*14}┼{'─'*14}┼{'─'*14}┼{'─'*14}┼{'─'*14}┼{'─'*10}┤")
+    # Full-period averages (annualised)
+    ann_all = 365.0 / len(df)
+    fund_all    = df["funding_yield_daily_pct"].sum()  * ann_all
+    stake_all   = df["staking_yield_daily_pct"].sum()  * ann_all
+    borrow_all  = df["borrow_yield_daily_pct"].sum()   * ann_all
+    net_all     = df["net_yield_daily_pct"].sum()      * ann_all
+    income_all  = fund_all + stake_all
+    print(
+        f"│{'TOTAL':^8}│"
+        f" {fund_all:+10.2f}%  │"
+        f" {stake_all:+10.2f}%  │"
+        f" {borrow_all:+10.2f}%  │"
+        f" {net_all:+10.2f}%  │"
+        f" {income_all:+10.2f}%  │"
+        f"  {len(df):>6}    │"
+    )
+    print(f"└{'─'*8}┴{'─'*14}┴{'─'*14}┴{'─'*14}┴{'─'*14}┴{'─'*14}┴{'─'*10}┘")
 
 
 def print_summary(stats):
@@ -371,13 +427,16 @@ def print_summary(stats):
     print(f"  {N_LOOPS}× ETH Loop  ·  ×{leverage_multiplier:.2f} leverage  ·  Delta-Neutral via Perp Short")
     print("═" * 68)
     print(f"  Period              : Jan 2022 – Mar 2025 ({stats['years']:.1f} yr)")
-    print(f"  Total Funding Income: +${stats['total_funding_usd']:,.0f} per ETH")
-    print(f"  Total Borrow Cost   : −${stats['total_borrow_usd']:,.0f} per ETH")
-    print(f"  Total Net P&L       : +${stats['total_net_usd']:,.0f} per ETH")
-    print(f"  Avg Net Yield (APR) : {stats['avg_net_apr']:+.1f}%  on equity")
-    print(f"  Avg ETH Funding APR : {stats['avg_raw_funding']:.1f}%  (raw perp rate)")
-    print(f"  Avg USDC Borrow APR : {stats['avg_raw_borrow']:.1f}%  (incl 0.5% spread)")
-    print(f"  Avg Net Spread      : {stats['avg_raw_spread']:+.1f}%  (fund − borrow)")
+    print(f"  Total Funding Income  : +${stats['total_funding_usd']:,.0f} per ETH")
+    print(f"  Total Staking Income  : +${stats['total_staking_usd']:,.0f} per ETH  (2.7% × ×{leverage_multiplier:.2f})")
+    print(f"  Total Borrow Cost     : −${stats['total_borrow_usd']:,.0f} per ETH")
+    print(f"  Total Net P&L         : +${stats['total_net_usd']:,.0f} per ETH")
+    print(f"  Avg Net Yield (APR)   : {stats['avg_net_apr']:+.1f}%  on equity")
+    print(f"  Avg Funding APR/equity: {stats['avg_funding_apr']:+.1f}%  (leveraged)")
+    print(f"  Avg Staking APR/equity: {stats['avg_staking_apr']:+.1f}%  (2.7% × ×{leverage_multiplier:.2f})")
+    print(f"  Avg Borrow APR/equity : {stats['avg_borrow_apr']:+.1f}%  (on borrowed/equity)")
+    print(f"  Avg raw Funding APR   : {stats['avg_raw_funding']:.1f}%  (raw perp rate)")
+    print(f"  Avg raw Borrow APR    : {stats['avg_raw_borrow']:.1f}%  (incl 0.5% spread)")
     print(f"  Sharpe Ratio        : {stats['sharpe']:.2f}")
     print(f"  Max Drawdown (USD)  : ${stats['max_drawdown_usd']:,.0f}")
     print(f"  Days Profitable     : {stats['pct_positive_days']:.1f}%")
@@ -392,7 +451,7 @@ if __name__ == "__main__":
     df = run_backtest()
     stats = compute_stats(df)
     print_summary(stats)
-    print_annual_breakdown(df)
+    print_quarterly_breakdown(df)
     plot(df, stats)
 
     # Save detailed CSV for inspection
