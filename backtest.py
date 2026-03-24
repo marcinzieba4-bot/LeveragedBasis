@@ -26,7 +26,9 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
+import matplotlib.ticker as mticker
 from matplotlib.gridspec import GridSpec
+from scipy import stats as scipy_stats
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -421,6 +423,355 @@ def print_quarterly_breakdown(df):
     print(f"└{'─'*8}┴{'─'*14}┴{'─'*14}┴{'─'*14}┴{'─'*14}┴{'─'*14}┴{'─'*10}┘")
 
 
+def compute_risk_stats(df):
+    """Full risk analytics on the daily net yield (% on equity)."""
+    r = df["net_yield_daily_pct"].values / 100.0   # daily fraction
+
+    # ── Return metrics ──────────────────────────────────────────────────────
+    n_days   = len(r)
+    total_ret = (1 + r).prod() - 1                  # compound total return
+    cagr      = (1 + total_ret) ** (365.25 / n_days) - 1
+
+    # ── Volatility ──────────────────────────────────────────────────────────
+    ann_vol   = r.std() * np.sqrt(365)
+
+    # ── Sharpe (risk-free = 0, carry is the alpha) ───────────────────────────
+    sharpe    = (r.mean() / r.std()) * np.sqrt(365) if r.std() > 0 else 0
+
+    # ── Sortino (downside deviation, MAR = 0) ───────────────────────────────
+    neg = r[r < 0]
+    down_vol  = neg.std() * np.sqrt(365) if len(neg) > 1 else np.nan
+    sortino   = (r.mean() * 365) / down_vol if (down_vol and down_vol > 0) else np.nan
+
+    # ── Drawdown series ──────────────────────────────────────────────────────
+    equity_curve = (1 + r).cumprod()
+    running_max  = np.maximum.accumulate(equity_curve)
+    dd_series    = (equity_curve - running_max) / running_max   # negative
+
+    max_dd       = dd_series.min()           # most negative = worst drawdown
+
+    # Drawdown duration: longest consecutive stretch below high-water mark
+    in_dd        = dd_series < 0
+    max_dur = cur_dur = 0
+    for flag in in_dd:
+        if flag:
+            cur_dur += 1
+            max_dur  = max(max_dur, cur_dur)
+        else:
+            cur_dur = 0
+
+    # Calmar = CAGR / |max drawdown|
+    calmar = cagr / abs(max_dd) if max_dd < 0 else np.nan
+
+    # ── VaR / CVaR ───────────────────────────────────────────────────────────
+    var_95  = np.percentile(r, 5)
+    var_99  = np.percentile(r, 1)
+    cvar_95 = r[r <= var_95].mean()
+    cvar_99 = r[r <= var_99].mean()
+
+    # ── Distribution ─────────────────────────────────────────────────────────
+    skew  = scipy_stats.skew(r)
+    kurt  = scipy_stats.kurtosis(r)        # excess kurtosis (normal = 0)
+
+    # ── Tail / win stats ─────────────────────────────────────────────────────
+    win_rate   = (r > 0).mean() * 100
+    avg_win    = r[r > 0].mean() * 100 if (r > 0).any() else 0
+    avg_loss   = r[r < 0].mean() * 100 if (r < 0).any() else 0
+    pfactor    = (-r[r > 0].sum() / r[r < 0].sum()) if (r < 0).any() else np.nan
+    best_day   = r.max() * 100
+    worst_day  = r.min() * 100
+
+    # Monthly returns
+    monthly = (
+        df.set_index("date")["net_yield_daily_pct"]
+        .resample("ME").sum()     # sum of daily % ≈ monthly total
+    )
+    best_month  = monthly.max()
+    worst_month = monthly.min()
+
+    return {
+        "n_days":       n_days,
+        "total_ret":    total_ret * 100,
+        "cagr":         cagr * 100,
+        "ann_vol":      ann_vol * 100,
+        "sharpe":       sharpe,
+        "sortino":      sortino,
+        "calmar":       calmar,
+        "max_dd":       max_dd * 100,
+        "max_dd_dur":   max_dur,
+        "var_95":       var_95 * 100,
+        "var_99":       var_99 * 100,
+        "cvar_95":      cvar_95 * 100,
+        "cvar_99":      cvar_99 * 100,
+        "skew":         skew,
+        "kurt":         kurt,
+        "win_rate":     win_rate,
+        "avg_win":      avg_win,
+        "avg_loss":     avg_loss,
+        "pfactor":      pfactor,
+        "best_day":     best_day,
+        "worst_day":    worst_day,
+        "best_month":   best_month,
+        "worst_month":  worst_month,
+        "equity_curve": equity_curve,
+        "dd_series":    dd_series,
+        "monthly":      monthly,
+    }
+
+
+def print_risk_stats(rs):
+    W = 68
+    print("\n" + "═" * W)
+    print("  RISK STATISTICS")
+    print("═" * W)
+    rows = [
+        ("RETURN",           None),
+        ("Total Return",     f"{rs['total_ret']:+.1f}%"),
+        ("CAGR",             f"{rs['cagr']:+.1f}%"),
+        ("Ann. Volatility",  f"{rs['ann_vol']:.1f}%"),
+        ("",                 None),
+        ("RISK-ADJUSTED",    None),
+        ("Sharpe Ratio",     f"{rs['sharpe']:.2f}"),
+        ("Sortino Ratio",    f"{rs['sortino']:.2f}"),
+        ("Calmar Ratio",     f"{rs['calmar']:.2f}"),
+        ("",                 None),
+        ("DRAWDOWN",         None),
+        ("Max Drawdown",     f"{rs['max_dd']:.1f}%"),
+        ("Max DD Duration",  f"{rs['max_dd_dur']} days"),
+        ("",                 None),
+        ("TAIL RISK (daily)",None),
+        ("VaR 95%",          f"{rs['var_95']:.3f}%"),
+        ("VaR 99%",          f"{rs['var_99']:.3f}%"),
+        ("CVaR 95%",         f"{rs['cvar_95']:.3f}%"),
+        ("CVaR 99%",         f"{rs['cvar_99']:.3f}%"),
+        ("",                 None),
+        ("DISTRIBUTION",     None),
+        ("Skewness",         f"{rs['skew']:.2f}  {'(right-skewed)' if rs['skew']>0 else '(left-skewed)'}"),
+        ("Excess Kurtosis",  f"{rs['kurt']:.2f}  {'(fat tails)' if rs['kurt']>0 else '(thin tails)'}"),
+        ("",                 None),
+        ("WIN / LOSS",       None),
+        ("Win Rate",         f"{rs['win_rate']:.1f}%"),
+        ("Avg Win Day",      f"{rs['avg_win']:+.3f}%"),
+        ("Avg Loss Day",     f"{rs['avg_loss']:+.3f}%"),
+        ("Profit Factor",    f"{rs['pfactor']:.2f}"),
+        ("Best Day",         f"{rs['best_day']:+.2f}%"),
+        ("Worst Day",        f"{rs['worst_day']:+.2f}%"),
+        ("Best Month",       f"{rs['best_month']:+.1f}%"),
+        ("Worst Month",      f"{rs['worst_month']:+.1f}%"),
+    ]
+    for label, value in rows:
+        if value is None and label:
+            print(f"\n  ── {label} {'─' * (W - len(label) - 6)}")
+        elif value is None:
+            pass
+        else:
+            print(f"  {label:<26}{value}")
+    print("═" * W)
+
+
+def plot_strategy_chart(df, rs):
+    """Professional strategy performance chart: equity curve, drawdown,
+    monthly heatmap, rolling Sharpe, return distribution."""
+
+    DARK_BG  = "#0d1117"
+    PANEL_BG = "#161b22"
+    GREEN    = "#3fb950"
+    RED      = "#f85149"
+    BLUE     = "#58a6ff"
+    ORANGE   = "#ffa657"
+    PURPLE   = "#d2a8ff"
+    GREY     = "#8b949e"
+    WHITE    = "#e6edf3"
+    YELLOW   = "#e3b341"
+
+    fig = plt.figure(figsize=(18, 24))
+    fig.patch.set_facecolor(DARK_BG)
+    gs = GridSpec(4, 2, figure=fig, hspace=0.50, wspace=0.35,
+                  height_ratios=[2, 1, 1.6, 1.6])
+
+    def style_ax(ax, title="", xlabel=True):
+        ax.set_facecolor(PANEL_BG)
+        ax.tick_params(colors=GREY, labelsize=8)
+        ax.xaxis.label.set_color(GREY)
+        ax.yaxis.label.set_color(GREY)
+        if title:
+            ax.set_title(title, color=WHITE, fontsize=10, pad=8, fontweight="bold")
+        for sp in ax.spines.values():
+            sp.set_edgecolor("#30363d")
+        ax.grid(axis="y", color="#21262d", lw=0.5, ls="--")
+        ax.grid(axis="x", color="#21262d", lw=0.3, ls=":")
+        if xlabel:
+            ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m"))
+            ax.xaxis.set_major_locator(mdates.MonthLocator(interval=6))
+            plt.setp(ax.xaxis.get_majorticklabels(), rotation=30, ha="right", fontsize=7)
+
+    dates = df["date"].values
+    r     = df["net_yield_daily_pct"].values / 100.0
+    ec    = rs["equity_curve"]          # 1→N normalised
+    dd    = rs["dd_series"] * 100       # % drawdown (negative)
+
+    # ── 1. Equity curve (log scale, normalised to 100) ───────────────────────
+    ax1 = fig.add_subplot(gs[0, :])
+    ec_idx  = ec * 100                  # base 100
+    # benchmark: +0% (flat USDC)
+    ax1.semilogy(dates, ec_idx, color=BLUE, lw=2.0, label=f"Strategy (CAGR {rs['cagr']:+.1f}%)")
+    ax1.fill_between(dates, ec_idx, 100, where=(ec_idx >= 100), alpha=0.15, color=GREEN)
+    ax1.fill_between(dates, ec_idx, 100, where=(ec_idx < 100),  alpha=0.25, color=RED)
+    ax1.axhline(100, color=GREY, lw=0.8, ls="--", label="Starting value = 100")
+    # Annotate final value
+    ax1.annotate(f"{ec_idx[-1]:.0f}", xy=(dates[-1], ec_idx[-1]),
+                 xytext=(8, 0), textcoords="offset points",
+                 color=BLUE, fontsize=9, fontweight="bold", va="center")
+    ax1.set_ylabel("Equity (log scale, base 100)", color=GREY, fontsize=9)
+    ax1.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"{x:.0f}"))
+    ax1.legend(loc="upper left", fontsize=9, framealpha=0.15, labelcolor=WHITE)
+    style_ax(ax1, f"Strategy Equity Curve — Leveraged Basis + stETH  "
+                  f"|  Total Return {rs['total_ret']:+.0f}%  ·  CAGR {rs['cagr']:+.1f}%  ·  "
+                  f"Sharpe {rs['sharpe']:.2f}  ·  Sortino {rs['sortino']:.2f}  ·  Calmar {rs['calmar']:.2f}")
+
+    # ── 2. Drawdown ───────────────────────────────────────────────────────────
+    ax2 = fig.add_subplot(gs[1, :])
+    ax2.fill_between(dates, dd, 0, alpha=0.55, color=RED)
+    ax2.plot(dates, dd, color=RED, lw=0.8)
+    ax2.axhline(rs["max_dd"], color=ORANGE, lw=1.0, ls=":",
+                label=f"Max DD  {rs['max_dd']:.1f}%  ({rs['max_dd_dur']} days)")
+    ax2.set_ylabel("Drawdown (%)", color=GREY, fontsize=9)
+    ax2.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"{x:.0f}%"))
+    ax2.legend(loc="lower right", fontsize=8.5, framealpha=0.15, labelcolor=WHITE)
+    style_ax(ax2, "Underwater Chart (Drawdown from High-Water Mark)")
+
+    # ── 3. Monthly returns heatmap ────────────────────────────────────────────
+    ax3 = fig.add_subplot(gs[2, :])
+    monthly = rs["monthly"]
+    monthly_df = monthly.to_frame("ret")
+    monthly_df["year"]  = monthly_df.index.year
+    monthly_df["month"] = monthly_df.index.month
+
+    years  = sorted(monthly_df["year"].unique())
+    months = list(range(1, 13))
+    grid   = np.full((len(years), 12), np.nan)
+    for _, row in monthly_df.iterrows():
+        yi = years.index(row["year"])
+        mi = int(row["month"]) - 1
+        grid[yi, mi] = row["ret"]
+
+    # Symmetric color scale capped at ±50% monthly
+    vmax = min(50, np.nanpercentile(np.abs(grid), 98))
+    im = ax3.imshow(grid, aspect="auto", cmap="RdYlGn", vmin=-vmax, vmax=vmax)
+    ax3.set_xticks(range(12))
+    ax3.set_xticklabels(["Jan","Feb","Mar","Apr","May","Jun",
+                         "Jul","Aug","Sep","Oct","Nov","Dec"],
+                        color=GREY, fontsize=8)
+    ax3.set_yticks(range(len(years)))
+    ax3.set_yticklabels(years, color=GREY, fontsize=8)
+    ax3.tick_params(length=0)
+    # Annotate cells
+    for yi in range(len(years)):
+        for mi in range(12):
+            v = grid[yi, mi]
+            if not np.isnan(v):
+                txt_col = "white" if abs(v) > vmax * 0.5 else "#111"
+                ax3.text(mi, yi, f"{v:+.0f}%", ha="center", va="center",
+                         fontsize=6.5, color=txt_col, fontweight="bold")
+    cbar = fig.colorbar(im, ax=ax3, orientation="vertical", fraction=0.015, pad=0.01)
+    cbar.ax.tick_params(colors=GREY, labelsize=7)
+    cbar.set_label("Monthly Return (%)", color=GREY, fontsize=8)
+    ax3.set_facecolor(PANEL_BG)
+    ax3.set_title("Monthly Returns Heatmap (%)", color=WHITE, fontsize=10,
+                  pad=8, fontweight="bold")
+    for sp in ax3.spines.values():
+        sp.set_edgecolor("#30363d")
+
+    # ── 4. Rolling 90-day Sharpe ──────────────────────────────────────────────
+    ax4 = fig.add_subplot(gs[3, 0])
+    roll_mean = pd.Series(r).rolling(90).mean()
+    roll_std  = pd.Series(r).rolling(90).std()
+    roll_sh   = (roll_mean / roll_std) * np.sqrt(365)
+    roll_sh_c = roll_sh.clip(-5, 10)
+    ax4.fill_between(dates, roll_sh_c, 0,
+                     where=(roll_sh_c >= 0), alpha=0.20, color=GREEN)
+    ax4.fill_between(dates, roll_sh_c, 0,
+                     where=(roll_sh_c < 0),  alpha=0.20, color=RED)
+    ax4.plot(dates, roll_sh_c, color=PURPLE, lw=1.5,
+             label=f"Rolling 90-day Sharpe")
+    ax4.axhline(0, color=GREY, lw=0.7, ls="--")
+    ax4.axhline(1, color=GREEN, lw=0.7, ls=":", alpha=0.6, label="Sharpe = 1")
+    ax4.axhline(rs["sharpe"], color=BLUE, lw=1.0, ls=":",
+                label=f"Full-period Sharpe = {rs['sharpe']:.2f}")
+    ax4.set_ylabel("Sharpe Ratio", color=GREY, fontsize=9)
+    ax4.legend(loc="upper right", fontsize=7.5, framealpha=0.15, labelcolor=WHITE)
+    style_ax(ax4, "Rolling 90-Day Sharpe Ratio")
+
+    # ── 5. Return distribution ────────────────────────────────────────────────
+    ax5 = fig.add_subplot(gs[3, 1])
+    r_pct = r * 100
+    bins  = np.linspace(np.percentile(r_pct, 0.5), np.percentile(r_pct, 99.5), 80)
+    n_vals, bin_edges, patches = ax5.hist(r_pct, bins=bins, color=BLUE,
+                                          alpha=0.55, edgecolor="none", density=True)
+
+    # Colour negative bars red
+    for patch, left in zip(patches, bin_edges[:-1]):
+        if left < 0:
+            patch.set_facecolor(RED)
+            patch.set_alpha(0.55)
+
+    # Normal overlay
+    mu, sigma = r_pct.mean(), r_pct.std()
+    x_fit = np.linspace(bins[0], bins[-1], 300)
+    from scipy.stats import norm
+    ax5.plot(x_fit, norm.pdf(x_fit, mu, sigma), color=ORANGE, lw=1.5,
+             ls="--", label=f"Normal(μ={mu:.3f}%, σ={sigma:.3f}%)")
+
+    # VaR lines
+    ax5.axvline(rs["var_95"], color=YELLOW, lw=1.2, ls=":",
+                label=f"VaR 95%  {rs['var_95']:.3f}%")
+    ax5.axvline(rs["var_99"], color=RED, lw=1.2, ls=":",
+                label=f"VaR 99%  {rs['var_99']:.3f}%")
+    ax5.set_xlabel("Daily Return (%)", color=GREY, fontsize=9)
+    ax5.set_ylabel("Density", color=GREY, fontsize=9)
+    ax5.legend(loc="upper right", fontsize=7, framealpha=0.15, labelcolor=WHITE)
+    style_ax(ax5, f"Daily Return Distribution  |  Skew {rs['skew']:+.2f}  "
+                  f"ExKurt {rs['kurt']:+.2f}", xlabel=False)
+    ax5.tick_params(axis="x", colors=GREY, labelsize=8)
+
+    # ── Risk table (right half of row 3 — already used, add text block inside ax5's twin) ─
+    # Actually place a compact risk block as a text box overlay on ax1
+    risk_text = (
+        f"  Risk Stats\n"
+        f"  ─────────────────\n"
+        f"  CAGR         {rs['cagr']:+.1f}%\n"
+        f"  Ann. Vol     {rs['ann_vol']:.1f}%\n"
+        f"  Sharpe       {rs['sharpe']:.2f}\n"
+        f"  Sortino      {rs['sortino']:.2f}\n"
+        f"  Calmar       {rs['calmar']:.2f}\n"
+        f"  Max DD       {rs['max_dd']:.1f}%\n"
+        f"  DD Dur       {rs['max_dd_dur']}d\n"
+        f"  VaR 95%      {rs['var_95']:.3f}%\n"
+        f"  VaR 99%      {rs['var_99']:.3f}%\n"
+        f"  CVaR 95%     {rs['cvar_95']:.3f}%\n"
+        f"  CVaR 99%     {rs['cvar_99']:.3f}%\n"
+        f"  Win Rate     {rs['win_rate']:.1f}%\n"
+        f"  Profit Fac.  {rs['pfactor']:.2f}\n"
+        f"  Skew         {rs['skew']:+.2f}\n"
+        f"  Ex. Kurt     {rs['kurt']:+.2f}"
+    )
+    ax1.text(0.998, 0.98, risk_text, transform=ax1.transAxes,
+             ha="right", va="top", fontsize=7.5, color=WHITE,
+             fontfamily="monospace",
+             bbox=dict(boxstyle="round,pad=0.5", facecolor="#161b22",
+                       edgecolor="#30363d", alpha=0.92))
+
+    fig.suptitle(
+        "Leveraged Basis Strategy — Performance & Risk Analysis  |  Jan 2022 – Mar 2025",
+        color=WHITE, fontsize=14, fontweight="bold", y=0.998
+    )
+
+    plt.savefig("strategy_chart.png", dpi=150, bbox_inches="tight",
+                facecolor=DARK_BG, edgecolor="none")
+    print("Strategy chart saved → strategy_chart.png")
+    plt.close()
+
+
 def print_summary(stats):
     print("\n" + "═" * 68)
     print("  LEVERAGED BASIS STRATEGY — BACKTEST SUMMARY")
@@ -450,9 +801,13 @@ if __name__ == "__main__":
 
     df = run_backtest()
     stats = compute_stats(df)
+    rs    = compute_risk_stats(df)
+
     print_summary(stats)
+    print_risk_stats(rs)
     print_quarterly_breakdown(df)
     plot(df, stats)
+    plot_strategy_chart(df, rs)
 
     # Save detailed CSV for inspection
     df.to_csv("backtest_detail.csv", index=False)
