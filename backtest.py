@@ -248,7 +248,7 @@ def plot(df, stats):
     ax1.set_ylabel("Cumulative USD P&L (per 1 ETH initial collateral)", color=GREY, fontsize=9)
     ax1.legend(loc="upper left", fontsize=8.5, framealpha=0.15, labelcolor=WHITE)
     ax1.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"${x:,.0f}"))
-    style_ax(ax1, f"Cumulative P&L — {N_LOOPS}× ETH Loop (×{leverage_multiplier:.2f} leverage), Delta-Neutral + stETH (2.7%)  |  Jan 2022–Mar 2025")
+    style_ax(ax1, f"Cumulative P&L — {N_LOOPS}× ETH Loop (×{leverage_multiplier:.2f} leverage), Delta-Neutral + stETH (2.7%)  |  Jan 2022–Mar 2026")
 
     # ── 2. Raw funding rate APR on perp ──────────────────────────────────────
     ax2 = fig.add_subplot(gs[1, 0])
@@ -321,7 +321,7 @@ def plot(df, stats):
              ha="center", va="top", color=WHITE, fontsize=10, fontweight="bold")
 
     metrics = [
-        ("Period",                        f"Jan 2022 – Mar 2025  ({stats['years']:.1f} yrs)"),
+        ("Period",                        f"Jan 2022 – Mar 2026  ({stats['years']:.1f} yrs)"),
         ("Initial collateral",             f"1 stETH  (~${df['price'].iloc[0]:,.0f})"),
         ("Total Funding Income",           f"+${stats['total_funding_usd']:,.0f} per ETH"),
         ("Total Staking Income (2.7%)",    f"+${stats['total_staking_usd']:,.0f} per ETH"),
@@ -360,7 +360,7 @@ def plot(df, stats):
         spine.set_edgecolor("#30363d")
 
     fig.suptitle(
-        "Leveraged ETH Basis Backtest  |  Jan 2022 – Mar 2025",
+        "Leveraged ETH Basis Backtest  |  Jan 2022 – Mar 2026",
         color=WHITE, fontsize=14, fontweight="bold", y=0.995
     )
 
@@ -762,7 +762,7 @@ def plot_strategy_chart(df, rs):
                        edgecolor="#30363d", alpha=0.92))
 
     fig.suptitle(
-        "Leveraged Basis Strategy — Performance & Risk Analysis  |  Jan 2022 – Mar 2025",
+        "Leveraged Basis Strategy — Performance & Risk Analysis  |  Jan 2022 – Mar 2026",
         color=WHITE, fontsize=14, fontweight="bold", y=0.998
     )
 
@@ -777,7 +777,7 @@ def print_summary(stats):
     print("  LEVERAGED BASIS STRATEGY — BACKTEST SUMMARY")
     print(f"  {N_LOOPS}× ETH Loop  ·  ×{leverage_multiplier:.2f} leverage  ·  Delta-Neutral via Perp Short")
     print("═" * 68)
-    print(f"  Period              : Jan 2022 – Mar 2025 ({stats['years']:.1f} yr)")
+    print(f"  Period              : Jan 2022 – Mar 2026 ({stats['years']:.1f} yr)")
     print(f"  Total Funding Income  : +${stats['total_funding_usd']:,.0f} per ETH")
     print(f"  Total Staking Income  : +${stats['total_staking_usd']:,.0f} per ETH  (2.7% × ×{leverage_multiplier:.2f})")
     print(f"  Total Borrow Cost     : −${stats['total_borrow_usd']:,.0f} per ETH")
