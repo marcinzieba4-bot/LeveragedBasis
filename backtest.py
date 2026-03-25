@@ -780,6 +780,312 @@ def plot_strategy_chart(df, rs):
     plt.close()
 
 
+def compute_portfolio_pnl(df, initial_usdc=10_000):
+    """
+    Simulate $10k USDC invested in the strategy.
+    - Daily compounding of net_yield_daily_pct on current portfolio value.
+    - Quarterly rebalancing: position size is rescaled to the new portfolio
+      value at the start of each quarter (implicit in % compounding).
+    Returns a daily DataFrame with portfolio_value, daily_pnl_usd columns,
+    plus monthly and quarterly summary DataFrames.
+    """
+    daily = df[["date", "net_yield_daily_pct",
+                "funding_yield_daily_pct", "staking_yield_daily_pct",
+                "borrow_yield_daily_pct"]].copy()
+    daily = daily.sort_values("date").reset_index(drop=True)
+
+    # Daily compound growth
+    daily["portfolio_value"] = initial_usdc * (
+        (1 + daily["net_yield_daily_pct"] / 100).cumprod()
+    )
+    daily["portfolio_value_prev"] = daily["portfolio_value"].shift(1).fillna(initial_usdc)
+    daily["daily_pnl_usd"] = daily["portfolio_value"] - daily["portfolio_value_prev"]
+
+    daily["year"]    = daily["date"].dt.year
+    daily["month"]   = daily["date"].dt.month
+    daily["quarter"] = daily["date"].dt.quarter
+
+    # ── Monthly summary ──────────────────────────────────────────────────────
+    monthly_rows = []
+    for (yr, mo), g in daily.groupby(["year", "month"]):
+        start_val   = g["portfolio_value_prev"].iloc[0]
+        end_val     = g["portfolio_value"].iloc[-1]
+        mo_pnl      = end_val - start_val
+        mo_ret      = (end_val / start_val - 1) * 100
+        fund_apr    = g["funding_yield_daily_pct"].sum() * (365 / len(g))
+        stake_apr   = g["staking_yield_daily_pct"].sum() * (365 / len(g))
+        borrow_cost = -g["borrow_yield_daily_pct"].sum() * (365 / len(g))
+        net_apr     = g["net_yield_daily_pct"].sum()     * (365 / len(g))
+        monthly_rows.append({
+            "year": yr, "month": mo,
+            "quarter": (mo - 1) // 3 + 1,
+            "start_val": start_val, "end_val": end_val,
+            "mo_pnl": mo_pnl, "mo_ret": mo_ret,
+            "fund_apr": fund_apr, "stake_apr": stake_apr,
+            "borrow_cost": borrow_cost, "net_apr": net_apr,
+            "n_days": len(g),
+        })
+    monthly_df = pd.DataFrame(monthly_rows)
+
+    # ── Quarterly summary ────────────────────────────────────────────────────
+    quarterly_rows = []
+    for (yr, q), g in daily.groupby(["year", "quarter"]):
+        start_val   = g["portfolio_value_prev"].iloc[0]
+        end_val     = g["portfolio_value"].iloc[-1]
+        q_pnl       = end_val - start_val
+        q_ret       = (end_val / start_val - 1) * 100
+        ann         = 365.0 / len(g)
+        fund_apr    =  g["funding_yield_daily_pct"].sum() * ann
+        stake_apr   =  g["staking_yield_daily_pct"].sum() * ann
+        borrow_cost = -g["borrow_yield_daily_pct"].sum()  * ann
+        net_apr     =  g["net_yield_daily_pct"].sum()     * ann
+        quarterly_rows.append({
+            "year": yr, "quarter": q,
+            "start_val": start_val, "end_val": end_val,
+            "q_pnl": q_pnl, "q_ret": q_ret,
+            "fund_apr": fund_apr, "stake_apr": stake_apr,
+            "borrow_cost": borrow_cost, "net_apr": net_apr,
+            "n_days": len(g),
+        })
+    quarterly_df = pd.DataFrame(quarterly_rows)
+
+    return daily, monthly_df, quarterly_df
+
+
+def print_portfolio_table(monthly_df, quarterly_df, initial_usdc=10_000):
+    MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun",
+                   "Jul","Aug","Sep","Oct","Nov","Dec"]
+
+    # ── Monthly table ────────────────────────────────────────────────────────
+    hdr = "─" * 100
+    print(f"\n┌{hdr}┐")
+    print(f"│{'$10,000 USDC Invested — Monthly P&L with Quarterly Rebalance':^100}│")
+    print(f"│{'Daily compounding; position rescaled at each quarter-end to current portfolio value':^100}│")
+    print(f"├{'─'*9}┬{'─'*14}┬{'─'*14}┬{'─'*14}┬{'─'*12}┬{'─'*13}┬{'─'*13}┬{'─'*8}┤")
+    print(f"│{'Month':^9}│{'Start ($)':^14}│{'End ($)':^14}│{'P&L ($)':^14}│{'Return%':^12}│{'Net APR%':^13}│{'Gross APR%':^13}│{'Days':^8}│")
+    print(f"├{'─'*9}┼{'─'*14}┼{'─'*14}┼{'─'*14}┼{'─'*12}┼{'─'*13}┼{'─'*13}┼{'─'*8}┤")
+
+    prev_q = None
+    for _, row in monthly_df.iterrows():
+        mo_name = f"{MONTH_NAMES[int(row['month'])-1]} {int(row['year'])}"
+        cur_q = (int(row['year']), int(row['quarter']))
+        if prev_q is not None and cur_q != prev_q:
+            # Quarter separator line
+            print(f"├{'─'*9}┼{'─'*14}┼{'─'*14}┼{'─'*14}┼{'─'*12}┼{'─'*13}┼{'─'*13}┼{'─'*8}┤")
+        prev_q = cur_q
+        pnl_sign = "+" if row["mo_pnl"] >= 0 else ""
+        gross_apr = row["fund_apr"] + row["stake_apr"]
+        print(
+            f"│ {mo_name:<8}│"
+            f" ${row['start_val']:>11,.0f} │"
+            f" ${row['end_val']:>11,.0f} │"
+            f" {pnl_sign}${row['mo_pnl']:>10,.0f} │"
+            f" {row['mo_ret']:>+9.2f}%  │"
+            f" {row['net_apr']:>+9.2f}%   │"
+            f" {gross_apr:>+9.2f}%   │"
+            f"   {int(row['n_days']):>4}   │"
+        )
+    print(f"├{'─'*9}┼{'─'*14}┼{'─'*14}┼{'─'*14}┼{'─'*12}┼{'─'*13}┼{'─'*13}┼{'─'*8}┤")
+    total_pnl = monthly_df["mo_pnl"].sum()
+    end_final = monthly_df["end_val"].iloc[-1]
+    total_ret = (end_final / initial_usdc - 1) * 100
+    print(
+        f"│ {'TOTAL':<8}│"
+        f" ${initial_usdc:>11,.0f} │"
+        f" ${end_final:>11,.0f} │"
+        f" +${total_pnl:>10,.0f} │"
+        f" {total_ret:>+9.2f}%  │"
+        f"{'':^13}│{'':^13}│{'':^8}│"
+    )
+    print(f"└{'─'*9}┴{'─'*14}┴{'─'*14}┴{'─'*14}┴{'─'*12}┴{'─'*13}┴{'─'*13}┴{'─'*8}┘")
+
+    # ── Quarterly summary ────────────────────────────────────────────────────
+    print(f"\n┌{'─'*94}┐")
+    print(f"│{'Quarterly Rebalance Summary — $10,000 USDC Starting Capital':^94}│")
+    print(f"├{'─'*9}┬{'─'*14}┬{'─'*14}┬{'─'*14}┬{'─'*11}┬{'─'*11}┬{'─'*12}┬{'─'*6}┤")
+    print(f"│{'Quarter':^9}│{'Start ($)':^14}│{'End ($)':^14}│{'Q P&L ($)':^14}│{'Q Ret%':^11}│{'Net APR%':^11}│{'Rebal. Size':^12}│{'Days':^6}│")
+    print(f"├{'─'*9}┼{'─'*14}┼{'─'*14}┼{'─'*14}┼{'─'*11}┼{'─'*11}┼{'─'*12}┼{'─'*6}┤")
+    for _, row in quarterly_df.iterrows():
+        label = f"{int(row['year'])}Q{int(row['quarter'])}"
+        pnl_sign = "+" if row["q_pnl"] >= 0 else ""
+        print(
+            f"│ {label:<8}│"
+            f" ${row['start_val']:>11,.0f} │"
+            f" ${row['end_val']:>11,.0f} │"
+            f" {pnl_sign}${row['q_pnl']:>10,.0f} │"
+            f" {row['q_ret']:>+8.2f}%  │"
+            f" {row['net_apr']:>+8.2f}%  │"
+            f" ${row['end_val']:>9,.0f}   │"
+            f"  {int(row['n_days']):>3}  │"
+        )
+    print(f"├{'─'*9}┼{'─'*14}┼{'─'*14}┼{'─'*14}┼{'─'*11}┼{'─'*11}┼{'─'*12}┼{'─'*6}┤")
+    print(
+        f"│ {'TOTAL':<8}│"
+        f" ${initial_usdc:>11,.0f} │"
+        f" ${quarterly_df['end_val'].iloc[-1]:>11,.0f} │"
+        f" +${quarterly_df['q_pnl'].sum():>10,.0f} │"
+        f" {total_ret:>+8.2f}%  │"
+        f"{'':^11}│{'':^12}│{'':^6}│"
+    )
+    print(f"└{'─'*9}┴{'─'*14}┴{'─'*14}┴{'─'*14}┴{'─'*11}┴{'─'*11}┴{'─'*12}┴{'─'*6}┘")
+
+
+def plot_portfolio_chart(daily_df, monthly_df, quarterly_df, initial_usdc=10_000):
+    DARK_BG  = "#0d1117"
+    PANEL_BG = "#161b22"
+    GREEN    = "#3fb950"
+    RED      = "#f85149"
+    BLUE     = "#58a6ff"
+    ORANGE   = "#ffa657"
+    PURPLE   = "#d2a8ff"
+    GREY     = "#8b949e"
+    WHITE    = "#e6edf3"
+    YELLOW   = "#e3b341"
+
+    fig = plt.figure(figsize=(18, 20))
+    fig.patch.set_facecolor(DARK_BG)
+    gs = GridSpec(3, 2, figure=fig, hspace=0.45, wspace=0.35,
+                  height_ratios=[2.2, 1.2, 1.6])
+
+    def style_ax(ax, title="", date_fmt=True):
+        ax.set_facecolor(PANEL_BG)
+        ax.tick_params(colors=GREY, labelsize=8)
+        ax.xaxis.label.set_color(GREY)
+        ax.yaxis.label.set_color(GREY)
+        if title:
+            ax.set_title(title, color=WHITE, fontsize=10, pad=8, fontweight="bold")
+        for sp in ax.spines.values():
+            sp.set_edgecolor("#30363d")
+        ax.grid(axis="y", color="#21262d", lw=0.5, ls="--")
+        ax.grid(axis="x", color="#21262d", lw=0.3, ls=":")
+        if date_fmt:
+            ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m"))
+            ax.xaxis.set_major_locator(mdates.MonthLocator(interval=6))
+            plt.setp(ax.xaxis.get_majorticklabels(), rotation=30, ha="right", fontsize=7)
+
+    dates = daily_df["date"].values
+    port  = daily_df["portfolio_value"].values
+    final = port[-1]
+    total_ret = (final / initial_usdc - 1) * 100
+
+    # ── 1. Portfolio Value ────────────────────────────────────────────────────
+    ax1 = fig.add_subplot(gs[0, :])
+    ax1.fill_between(dates, port, initial_usdc,
+                     where=(port >= initial_usdc), alpha=0.15, color=GREEN)
+    ax1.fill_between(dates, port, initial_usdc,
+                     where=(port < initial_usdc), alpha=0.25, color=RED)
+    ax1.plot(dates, port, color=BLUE, lw=2.2,
+             label=f"Portfolio Value  (Final: ${final:,.0f}  |  +{total_ret:.0f}% total)")
+    ax1.axhline(initial_usdc, color=GREY, lw=0.8, ls="--",
+                label=f"Initial capital ${initial_usdc:,}")
+
+    # Mark quarterly rebalance points
+    for _, row in quarterly_df.iterrows():
+        # Find the last day of the quarter in daily_df
+        mask = (daily_df["year"] == row["year"]) & (daily_df["quarter"] == row["quarter"])
+        qend_date = daily_df[mask]["date"].iloc[-1]
+        qend_val  = daily_df[mask]["portfolio_value"].iloc[-1]
+        ax1.axvline(pd.Timestamp(qend_date), color=YELLOW, lw=0.6, alpha=0.4, ls=":")
+        ax1.scatter([pd.Timestamp(qend_date)], [qend_val],
+                    color=YELLOW, s=30, zorder=5, alpha=0.8)
+
+    ax1.scatter([], [], color=YELLOW, s=30, label="Quarterly rebalance point")
+    ax1.set_ylabel("Portfolio Value (USD)", color=GREY, fontsize=9)
+    ax1.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"${x:,.0f}"))
+    ax1.legend(loc="upper left", fontsize=9, framealpha=0.15, labelcolor=WHITE)
+    style_ax(ax1, f"$10,000 USDC — Leveraged Basis Strategy  |  "
+                  f"Jan 2022 – Mar 2026  ·  Final: ${final:,.0f}  ·  Total Return: {total_ret:+.0f}%")
+
+    # ── 2. Drawdown on portfolio ───────────────────────────────────────────────
+    ax2 = fig.add_subplot(gs[1, :])
+    running_max = np.maximum.accumulate(port)
+    dd_pct      = (port - running_max) / running_max * 100
+    ax2.fill_between(dates, dd_pct, 0, alpha=0.55, color=RED)
+    ax2.plot(dates, dd_pct, color=RED, lw=0.8)
+    ax2.axhline(dd_pct.min(), color=ORANGE, lw=1.0, ls=":",
+                label=f"Max Drawdown  {dd_pct.min():.1f}%")
+    ax2.set_ylabel("Drawdown (%)", color=GREY, fontsize=9)
+    ax2.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"{x:.0f}%"))
+    ax2.legend(loc="lower right", fontsize=8.5, framealpha=0.15, labelcolor=WHITE)
+    style_ax(ax2, "Portfolio Drawdown from High-Water Mark")
+
+    # ── 3. Quarterly P&L bars ─────────────────────────────────────────────────
+    ax3 = fig.add_subplot(gs[2, 0])
+    q_labels = [f"{int(r['year'])}Q{int(r['quarter'])}" for _, r in quarterly_df.iterrows()]
+    q_pnl    = quarterly_df["q_pnl"].values
+    colors   = [GREEN if v >= 0 else RED for v in q_pnl]
+    bars = ax3.bar(range(len(q_labels)), q_pnl, color=colors, alpha=0.85, edgecolor="none")
+    ax3.axhline(0, color=GREY, lw=0.7, ls="--")
+    ax3.set_xticks(range(len(q_labels)))
+    ax3.set_xticklabels(q_labels, rotation=45, ha="right", fontsize=7, color=GREY)
+    ax3.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"${x:,.0f}"))
+    ax3.set_ylabel("Q P&L (USD)", color=GREY, fontsize=9)
+    style_ax(ax3, "Quarterly P&L ($)", date_fmt=False)
+
+    # ── 4. Monthly return % heatmap ───────────────────────────────────────────
+    ax4 = fig.add_subplot(gs[2, 1])
+    monthly_df2 = monthly_df.copy()
+    years  = sorted(monthly_df2["year"].unique())
+    grid   = np.full((len(years), 12), np.nan)
+    for _, row in monthly_df2.iterrows():
+        yi = years.index(int(row["year"]))
+        mi = int(row["month"]) - 1
+        grid[yi, mi] = row["mo_ret"]
+
+    vmax = min(40, np.nanpercentile(np.abs(grid), 98))
+    im = ax4.imshow(grid, aspect="auto", cmap="RdYlGn", vmin=-vmax, vmax=vmax)
+    ax4.set_xticks(range(12))
+    ax4.set_xticklabels(["Jan","Feb","Mar","Apr","May","Jun",
+                         "Jul","Aug","Sep","Oct","Nov","Dec"],
+                        color=GREY, fontsize=7)
+    ax4.set_yticks(range(len(years)))
+    ax4.set_yticklabels(years, color=GREY, fontsize=8)
+    ax4.tick_params(length=0)
+    for yi in range(len(years)):
+        for mi in range(12):
+            v = grid[yi, mi]
+            if not np.isnan(v):
+                txt_col = "white" if abs(v) > vmax * 0.5 else "#111"
+                ax4.text(mi, yi, f"{v:+.0f}%", ha="center", va="center",
+                         fontsize=6, color=txt_col, fontweight="bold")
+    cbar = fig.colorbar(im, ax=ax4, orientation="vertical", fraction=0.015, pad=0.01)
+    cbar.ax.tick_params(colors=GREY, labelsize=7)
+    cbar.set_label("Monthly Return (%)", color=GREY, fontsize=8)
+    ax4.set_facecolor(PANEL_BG)
+    ax4.set_title("Monthly Return Heatmap (%)", color=WHITE, fontsize=10,
+                  pad=8, fontweight="bold")
+    for sp in ax4.spines.values():
+        sp.set_edgecolor("#30363d")
+
+    # Risk box overlay on ax1
+    cagr = (final / initial_usdc) ** (365.25 / len(daily_df)) - 1
+    risk_text = (
+        f"  $10k Portfolio Stats\n"
+        f"  ─────────────────────\n"
+        f"  Initial        ${initial_usdc:>9,}\n"
+        f"  Final          ${final:>9,.0f}\n"
+        f"  Total P&L      ${final-initial_usdc:>+9,.0f}\n"
+        f"  Total Return   {total_ret:>+9.1f}%\n"
+        f"  CAGR           {cagr*100:>+9.1f}%\n"
+        f"  Max DD         {dd_pct.min():>+9.1f}%\n"
+        f"  Rebalances     {len(quarterly_df):>9}"
+    )
+    ax1.text(0.998, 0.98, risk_text, transform=ax1.transAxes,
+             ha="right", va="top", fontsize=8, color=WHITE,
+             fontfamily="monospace",
+             bbox=dict(boxstyle="round,pad=0.5", facecolor="#161b22",
+                       edgecolor="#30363d", alpha=0.92))
+
+    fig.suptitle(
+        "$10,000 USDC — Leveraged Basis Strategy Portfolio  |  Jan 2022 – Mar 2026",
+        color=WHITE, fontsize=14, fontweight="bold", y=0.998
+    )
+    plt.savefig("portfolio_chart.png", dpi=150, bbox_inches="tight",
+                facecolor=DARK_BG, edgecolor="none")
+    print("Portfolio chart saved → portfolio_chart.png")
+    plt.close()
+
+
 def print_summary(stats):
     print("\n" + "═" * 68)
     print("  LEVERAGED BASIS STRATEGY — BACKTEST SUMMARY")
@@ -816,6 +1122,14 @@ if __name__ == "__main__":
     print_quarterly_breakdown(df)
     plot(df, stats)
     plot_strategy_chart(df, rs)
+
+    # ── $10k USDC portfolio simulation ───────────────────────────────────────
+    print("\n" + "═" * 68)
+    print("  $10,000 USDC PORTFOLIO SIMULATION")
+    print("═" * 68)
+    daily_port, monthly_df, quarterly_df = compute_portfolio_pnl(df, initial_usdc=10_000)
+    print_portfolio_table(monthly_df, quarterly_df, initial_usdc=10_000)
+    plot_portfolio_chart(daily_port, monthly_df, quarterly_df, initial_usdc=10_000)
 
     # Save detailed CSV for inspection
     df.to_csv("backtest_detail.csv", index=False)
