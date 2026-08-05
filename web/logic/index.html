@@ -1,0 +1,440 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Leveraged Basis — Strategy Logic</title>
+<meta name="description" content="Methodology, simulated backtest, and live performance of the Leveraged Basis ETH delta-neutral carry strategy.">
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --panel2:#1c2129; --border:#30363d;
+    --green:#3fb950; --red:#f85149; --blue:#58a6ff; --orange:#ffa657;
+    --purple:#d2a8ff; --grey:#8b949e; --white:#e6edf3; --yellow:#e3b341;
+    --heading:#1f6feb;
+    --maxw:1080px;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{
+    background:var(--bg); color:var(--white);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
+    line-height:1.6;
+  }
+  a{color:var(--blue);}
+  .wrap{max-width:var(--maxw); margin:0 auto; padding:0 20px;}
+  code, .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;}
+
+  /* ── Hero ───────────────────────────────────────────── */
+  .hero{
+    padding:56px 0 32px; border-bottom:1px solid var(--border);
+    background:radial-gradient(1200px 400px at 50% -100px, rgba(31,111,235,0.18), transparent);
+  }
+  .eyebrow{
+    color:var(--blue); text-transform:uppercase; letter-spacing:.12em;
+    font-size:12px; font-weight:700; margin:0 0 10px;
+  }
+  .hero h1{font-size:clamp(28px,4vw,42px); margin:0 0 10px; font-weight:800; letter-spacing:-0.01em;}
+  .hero p.lede{color:var(--grey); font-size:16px; max-width:720px; margin:0 0 28px;}
+  .badge{
+    display:inline-block; font-size:11px; font-weight:700; letter-spacing:.04em;
+    padding:3px 9px; border-radius:999px; border:1px solid var(--border);
+    color:var(--grey); text-transform:uppercase; margin-right:8px;
+  }
+  .badge.green{color:var(--green); border-color:rgba(63,185,80,.35); background:rgba(63,185,80,.08);}
+  .badge.blue{color:var(--blue); border-color:rgba(88,166,255,.35); background:rgba(88,166,255,.08);}
+
+  .kpi-strip{
+    display:grid; grid-template-columns:repeat(6,1fr); gap:1px;
+    background:var(--border); border:1px solid var(--border); border-radius:10px;
+    overflow:hidden; margin-top:8px;
+  }
+  .kpi{background:var(--panel); padding:16px 14px; text-align:center;}
+  .kpi .v{font-size:20px; font-weight:800; font-variant-numeric:tabular-nums;}
+  .kpi .l{font-size:11px; color:var(--grey); margin-top:4px; text-transform:uppercase; letter-spacing:.04em;}
+  .pos{color:var(--green);} .neg{color:var(--red);}
+
+  /* ── Sections ───────────────────────────────────────── */
+  section{padding:48px 0; border-bottom:1px solid var(--border);}
+  section:last-of-type{border-bottom:none;}
+  h2.sec-title{
+    font-size:24px; margin:0 0 6px; font-weight:800; display:flex; align-items:center; gap:10px;
+  }
+  h2.sec-title .num{color:var(--blue); font-family:ui-monospace,monospace; font-size:15px;}
+  .sec-sub{color:var(--grey); margin:0 0 28px; font-size:14.5px;}
+
+  h3{font-size:16px; color:var(--blue); margin:26px 0 8px;}
+  h3:first-child{margin-top:0;}
+  p{color:#c9d1d9; margin:0 0 12px; font-size:15px;}
+  ul.tight{margin:0 0 12px; padding-left:20px; color:#c9d1d9; font-size:15px;}
+  ul.tight li{margin-bottom:6px;}
+  .card{
+    background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:20px 22px;
+    margin-bottom:16px;
+  }
+
+  /* ── Loop diagram ───────────────────────────────────── */
+  .diagram{
+    background:var(--panel); border:1px solid var(--border); border-radius:10px;
+    padding:18px; margin:18px 0 24px; overflow-x:auto;
+  }
+  .diagram svg{display:block; margin:0 auto; min-width:640px;}
+
+  /* ── Params table ───────────────────────────────────── */
+  table{width:100%; border-collapse:collapse; font-size:14px;}
+  table.params td, table.params th{
+    padding:9px 12px; border-bottom:1px solid var(--border); text-align:left;
+  }
+  table.params th{color:var(--grey); font-weight:600; font-size:12px; text-transform:uppercase; letter-spacing:.03em;}
+  table.params td.val{font-family:ui-monospace,monospace; color:var(--white); text-align:right;}
+  table.params tr:last-child td{border-bottom:none;}
+
+  /* ── KPI grid (simulated) ──────────────────────────── */
+  .kpi-grid{
+    display:grid; grid-template-columns:repeat(4,1fr); gap:1px;
+    background:var(--border); border:1px solid var(--border); border-radius:10px; overflow:hidden;
+    margin-bottom:28px;
+  }
+  .kpi-grid .kpi{padding:18px 14px;}
+
+  /* ── Charts ─────────────────────────────────────────── */
+  .chart-card{margin-bottom:24px;}
+  .chart-card img{width:100%; height:auto; border-radius:6px; display:block;}
+  .chart-card .cap{color:var(--grey); font-size:12.5px; margin-top:10px; text-align:center;}
+
+  /* ── Quarterly table ────────────────────────────────── */
+  .scrollx{overflow-x:auto;}
+  table.quarterly{min-width:640px; font-size:13px;}
+  table.quarterly th{background:var(--panel2); position:sticky; top:0;}
+  table.quarterly td.q{font-family:ui-monospace,monospace; color:var(--grey);}
+
+  /* ── Live section ───────────────────────────────────── */
+  .live-panel{
+    background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:22px;
+  }
+  .live-status{
+    display:flex; align-items:center; gap:10px; margin-bottom:20px; flex-wrap:wrap;
+  }
+  .dot{width:9px; height:9px; border-radius:50%; background:var(--yellow); box-shadow:0 0 0 4px rgba(227,179,65,.15);}
+  .dot.live{background:var(--green); box-shadow:0 0 0 4px rgba(63,185,80,.15);}
+  .dot.off{background:var(--grey); box-shadow:0 0 0 4px rgba(139,148,158,.15);}
+  #live-status-text{font-size:13.5px; color:var(--grey);}
+  #live-status-text b{color:var(--white);}
+
+  .live-kpi-grid{
+    display:grid; grid-template-columns:repeat(4,1fr); gap:1px;
+    background:var(--border); border:1px solid var(--border); border-radius:10px; overflow:hidden;
+  }
+  .live-kpi-grid .kpi{background:var(--panel2); padding:18px 14px;}
+  .live-kpi-grid .kpi .v{font-family:ui-monospace,monospace;}
+  .live-note{
+    margin-top:18px; font-size:13px; color:var(--grey); border-left:2px solid var(--border);
+    padding-left:12px;
+  }
+
+  /* ── Footer ─────────────────────────────────────────── */
+  footer{padding:32px 0 56px; color:var(--grey); font-size:12.5px;}
+  footer .disclaimer{
+    border:1px solid var(--border); background:var(--panel); border-radius:10px;
+    padding:16px 18px; margin-bottom:16px;
+  }
+
+  @media (max-width:760px){
+    .kpi-strip{grid-template-columns:repeat(2,1fr);}
+    .kpi-grid{grid-template-columns:repeat(2,1fr);}
+    .live-kpi-grid{grid-template-columns:repeat(2,1fr);}
+  }
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <div class="wrap">
+    <p class="eyebrow">Strategy Logic</p>
+    <h1>Leveraged Basis</h1>
+    <p class="lede">
+      A delta-neutral ETH carry strategy: loop stETH collateral 5× on-chain, short an equal
+      notional of ETH perpetual futures, and harvest funding + staking yield while the position
+      stays fully hedged against ETH price moves.
+    </p>
+    <div style="margin-bottom:22px;">
+      <span class="badge blue">Delta-Neutral</span>
+      <span class="badge blue">ETH · stETH</span>
+      <span class="badge green">Backtested Jan 2022 – Mar 2026</span>
+      <span class="badge">Live tracking via Derive</span>
+    </div>
+
+    <div class="kpi-strip">
+      <div class="kpi"><div class="v pos">+487.9%</div><div class="l">Total Return</div></div>
+      <div class="kpi"><div class="v pos">+52.1%</div><div class="l">CAGR</div></div>
+      <div class="kpi"><div class="v">4.62</div><div class="l">Sharpe</div></div>
+      <div class="kpi"><div class="v neg">−23.0%</div><div class="l">Max Drawdown</div></div>
+      <div class="kpi"><div class="v pos">+42.3%</div><div class="l">Avg Net APR</div></div>
+      <div class="kpi"><div class="v pos">$58.8k</div><div class="l">$10k → Today</div></div>
+    </div>
+  </div>
+</header>
+
+<!-- ══════════════════════════════════════════════════════════════ METHODOLOGY -->
+<section id="methodology">
+  <div class="wrap">
+    <h2 class="sec-title"><span class="num">01</span> Methodology</h2>
+    <p class="sec-sub">How the position is built, hedged, and where the yield comes from.</p>
+
+    <h3>What is it?</h3>
+    <p>
+      The Leveraged Basis Strategy is a <b>delta-neutral carry trade</b> on Ethereum. It earns
+      yield from two independent sources — perpetual funding rates and stETH staking rewards —
+      while remaining fully hedged against ETH price movements. The strategy does not take a
+      directional bet on ETH; its return comes purely from the spread between what shorts are
+      paid (funding + staking) and what the leveraged position costs to finance (USDC borrow
+      interest).
+    </p>
+
+    <h3>How it works</h3>
+    <div class="diagram">
+      <svg viewBox="0 0 900 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Leveraged basis loop diagram">
+        <defs>
+          <marker id="arrow" markerWidth="9" markerHeight="9" refX="7" refY="4" orient="auto">
+            <path d="M0,0 L8,4 L0,8 Z" fill="#58a6ff"/>
+          </marker>
+        </defs>
+        <!-- Loop boxes -->
+        <g font-family="ui-monospace,monospace" font-size="12">
+          <rect x="20" y="30" width="150" height="56" rx="8" fill="#1c2129" stroke="#30363d"/>
+          <text x="95" y="53" fill="#e6edf3" text-anchor="middle" font-weight="700">Deposit stETH</text>
+          <text x="95" y="70" fill="#8b949e" text-anchor="middle" font-size="10">on-chain collateral</text>
+
+          <rect x="210" y="30" width="150" height="56" rx="8" fill="#1c2129" stroke="#30363d"/>
+          <text x="285" y="53" fill="#e6edf3" text-anchor="middle" font-weight="700">Borrow USDC</text>
+          <text x="285" y="70" fill="#8b949e" text-anchor="middle" font-size="10">80% LTV</text>
+
+          <rect x="400" y="30" width="150" height="56" rx="8" fill="#1c2129" stroke="#30363d"/>
+          <text x="475" y="53" fill="#e6edf3" text-anchor="middle" font-weight="700">Buy stETH</text>
+          <text x="475" y="70" fill="#8b949e" text-anchor="middle" font-size="10">re-deposit → loop</text>
+
+          <path d="M170,58 H210" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arrow)"/>
+          <path d="M360,58 H400" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arrow)"/>
+          <path d="M475,86 C 475,140 95,140 95,86" stroke="#58a6ff" stroke-width="1.5" fill="none" marker-end="url(#arrow)"/>
+          <text x="285" y="128" fill="#ffa657" text-anchor="middle" font-size="11" font-weight="700">× 5 loops → ×3.36 leverage</text>
+        </g>
+
+        <!-- Hedge -->
+        <g font-family="ui-monospace,monospace" font-size="12">
+          <rect x="590" y="30" width="170" height="56" rx="8" fill="#1c2129" stroke="#3fb950" stroke-width="1.4"/>
+          <text x="675" y="53" fill="#3fb950" text-anchor="middle" font-weight="700">Short ETH Perp</text>
+          <text x="675" y="70" fill="#8b949e" text-anchor="middle" font-size="10">equal notional → Δ-neutral</text>
+          <path d="M550,58 H590" stroke="#f85149" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#arrow)"/>
+        </g>
+
+        <!-- Revenue streams -->
+        <g font-family="ui-monospace,monospace" font-size="12">
+          <rect x="60" y="190" width="230" height="70" rx="8" fill="#161b22" stroke="#3fb950"/>
+          <text x="175" y="213" fill="#3fb950" text-anchor="middle" font-weight="700">+ Funding income</text>
+          <text x="175" y="230" fill="#8b949e" text-anchor="middle" font-size="10">shorts paid by longs</text>
+          <text x="175" y="246" fill="#8b949e" text-anchor="middle" font-size="10">avg 15.4% raw → ~46.5% on equity</text>
+
+          <rect x="320" y="190" width="230" height="70" rx="8" fill="#161b22" stroke="#3fb950"/>
+          <text x="435" y="213" fill="#3fb950" text-anchor="middle" font-weight="700">+ Staking yield</text>
+          <text x="435" y="230" fill="#8b949e" text-anchor="middle" font-size="10">stETH ~2.7% APR</text>
+          <text x="435" y="246" fill="#8b949e" text-anchor="middle" font-size="10">leveraged → ~9.1% on equity</text>
+
+          <rect x="580" y="190" width="230" height="70" rx="8" fill="#161b22" stroke="#f85149"/>
+          <text x="695" y="213" fill="#f85149" text-anchor="middle" font-weight="700">− Borrow cost</text>
+          <text x="695" y="230" fill="#8b949e" text-anchor="middle" font-size="10">USDC interest on loan</text>
+          <text x="695" y="246" fill="#8b949e" text-anchor="middle" font-size="10">avg 5.6% raw → ~13.2% on equity</text>
+        </g>
+        <path d="M285,86 V190 M475,86 V190 M675,86 V150 C675,180 695,180 695,190" stroke="#30363d" stroke-width="1" fill="none"/>
+      </svg>
+    </div>
+
+    <ul class="tight">
+      <li><b>Collateral loop (5×):</b> Starting with 1 stETH, the strategy repeatedly deposits stETH, borrows USDC at 80% LTV, buys more stETH, and re-deposits. After 5 loops this builds a ×3.36 leveraged stETH position on-chain.</li>
+      <li><b>Delta hedge:</b> An equal-sized short position on the ETH-USDT perpetual futures market cancels all directional ETH exposure. The portfolio is price-neutral — it neither gains nor loses from ETH price moves.</li>
+      <li><b>Funding income:</b> Perpetual longs pay shorts when the market is net bullish (avg raw rate 15.4% APR historically). At ×3.36 leverage this amplifies to roughly 46.5% APR on posted equity.</li>
+      <li><b>Staking income:</b> All looped stETH earns ~2.7% APR, amplified to roughly 9.1% APR on equity.</li>
+      <li><b>Cost:</b> USDC borrow interest on the leveraged position (avg 5.6% APR including a 0.5% protocol spread), netting to roughly 13.2% APR drag on equity.</li>
+    </ul>
+
+    <h3>Quarterly rebalancing</h3>
+    <p>
+      At the end of each quarter the position is rebalanced: collateral, short notional, and
+      borrow size are all rescaled to the current portfolio value. This keeps the leverage ratio
+      constant and ensures compounding gains are fully redeployed.
+    </p>
+
+    <h3>Key risks</h3>
+    <ul class="tight">
+      <li><b>Negative funding:</b> When the market turns bearish, longs pay nothing and shorts may pay longs (observed: 2022 Q3 −53.6% annualised; 2025 Q1 −35.5%).</li>
+      <li><b>Borrow rate spikes:</b> DeFi utilisation surges can push USDC rates above funding income (notable in late 2023, when borrow cost reached ~20% annualised).</li>
+      <li><b>Liquidation risk:</b> 80% LTV per loop leaves a buffer, but extreme price volatility or oracle manipulation could threaten collateral ratios.</li>
+      <li><b>Smart-contract risk:</b> Lending protocol (Aave/Compound) or exchange failure/exploit.</li>
+      <li><b>Execution slippage:</b> Modelled in the backtest at a 10% funding take-rate.</li>
+    </ul>
+
+    <h3>Parameters</h3>
+    <div class="card" style="padding:0;">
+      <table class="params">
+        <tr><th>Parameter</th><th style="text-align:right">Value</th></tr>
+        <tr><td>Loops</td><td class="val">5</td></tr>
+        <tr><td>LTV per loop</td><td class="val">80%</td></tr>
+        <tr><td>Resulting leverage</td><td class="val">×3.36</td></tr>
+        <tr><td>Hedge instrument</td><td class="val">ETH-USDT perpetual (short)</td></tr>
+        <tr><td>Funding take-rate (slippage buffer)</td><td class="val">10%</td></tr>
+        <tr><td>Borrow spread over raw rate</td><td class="val">+0.5% APR</td></tr>
+        <tr><td>Staking yield (stETH)</td><td class="val">2.7% APR</td></tr>
+        <tr><td>Rebalance frequency</td><td class="val">Quarterly</td></tr>
+        <tr><td>Data sources</td><td class="val">Binance funding · Aave/Compound (DeFi Llama) · CoinGecko price</td></tr>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════════ SIMULATED -->
+<section id="simulated">
+  <div class="wrap">
+    <h2 class="sec-title"><span class="num">02</span> Simulated Performance</h2>
+    <p class="sec-sub">Full backtest, Jan 2022 – Mar 2026 (4.2 years, 1,544 days), per 1 ETH of posted equity.</p>
+
+    <div class="kpi-grid">
+      <div class="kpi"><div class="v pos">+487.9%</div><div class="l">Total Return</div></div>
+      <div class="kpi"><div class="v pos">+52.1%</div><div class="l">CAGR</div></div>
+      <div class="kpi"><div class="v">9.2%</div><div class="l">Ann. Volatility</div></div>
+      <div class="kpi"><div class="v">4.62</div><div class="l">Sharpe Ratio</div></div>
+      <div class="kpi"><div class="v">8.03</div><div class="l">Sortino Ratio</div></div>
+      <div class="kpi"><div class="v">2.27</div><div class="l">Calmar Ratio</div></div>
+      <div class="kpi"><div class="v neg">−23.0%</div><div class="l">Max Drawdown</div></div>
+      <div class="kpi"><div class="v">57.8%</div><div class="l">Win Rate (days)</div></div>
+      <div class="kpi"><div class="v">1.93</div><div class="l">Profit Factor</div></div>
+      <div class="kpi"><div class="v pos">+$6,371</div><div class="l">Funding Income / ETH</div></div>
+      <div class="kpi"><div class="v pos">+$952</div><div class="l">Staking Income / ETH</div></div>
+      <div class="kpi"><div class="v neg">−$1,497</div><div class="l">Borrow Cost / ETH</div></div>
+    </div>
+
+    <div class="card" style="margin-bottom:28px;">
+      <p style="margin:0;">
+        A hypothetical <b>$10,000</b> deployed into the strategy on 1 Jan 2022 and compounded with
+        quarterly rebalancing would be worth <b class="pos">$58,794</b> as of 24 Mar 2026 —
+        a <b>5.88×</b> multiple. Returns are lumpy by design: funding-driven quarters like 2024 Q1
+        (+269.5% annualised) coexist with drawdown quarters like 2022 Q3 (−53.6% annualised) when
+        the market turned bearish and funding flipped negative.
+      </p>
+    </div>
+
+    <div class="chart-card">
+      <img src="assets/backtest_results.png" alt="Cumulative P&L, funding vs borrow rate, and rolling APR charts" loading="lazy">
+      <p class="cap">Cumulative net P&amp;L, funding vs. borrow rate comparison, and rolling 30-day APR — per 1 ETH collateral.</p>
+    </div>
+    <div class="chart-card">
+      <img src="assets/strategy_chart.png" alt="Equity curve, drawdown, monthly heatmap, and rolling Sharpe ratio" loading="lazy">
+      <p class="cap">Log equity curve, drawdown series, monthly return heatmap, and rolling 90-day Sharpe ratio.</p>
+    </div>
+    <div class="chart-card">
+      <img src="assets/portfolio_chart.png" alt="$10,000 portfolio simulation with quarterly rebalancing" loading="lazy">
+      <p class="cap">$10,000 portfolio simulation, monthly P&amp;L and quarterly rebalance detail.</p>
+    </div>
+
+    <h3>Quarterly breakdown</h3>
+    <div class="scrollx card" style="padding:0;">
+      <table class="quarterly">
+        <thead>
+          <tr><th style="padding:10px 12px;">Quarter</th><th style="padding:10px 12px; text-align:right;">Net APR (annualised)</th></tr>
+        </thead>
+        <tbody id="quarterly-tbody"></tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════════ LIVE -->
+<section id="live">
+  <div class="wrap">
+    <h2 class="sec-title"><span class="num">03</span> Live Performance</h2>
+    <p class="sec-sub">Realized P&amp;L tracked from the live position on <a href="https://derive.xyz" target="_blank" rel="noopener">Derive</a>.</p>
+
+    <div class="live-panel">
+      <div class="live-status">
+        <span class="dot off" id="live-dot"></span>
+        <span id="live-status-text"><b>Live feed not yet connected.</b> This panel is wired to read a
+          PnL snapshot published by the trading account — connect the data source to activate it.</span>
+      </div>
+
+      <div class="live-kpi-grid">
+        <div class="kpi"><div class="v" id="live-pnl">—</div><div class="l">Realized PnL (since launch)</div></div>
+        <div class="kpi"><div class="v" id="live-notional">—</div><div class="l">Open Notional</div></div>
+        <div class="kpi"><div class="v" id="live-funding-7d">—</div><div class="l">Funding, 7d</div></div>
+        <div class="kpi"><div class="v" id="live-updated">—</div><div class="l">Last Synced</div></div>
+      </div>
+
+      <p class="live-note">
+        Live numbers are read from <code>data/live_pnl.json</code>, a small snapshot file refreshed
+        on a schedule from the Derive account (never a browser-side API key). Until that feed is
+        published, the tiles above stay blank rather than show placeholder or simulated figures.
+      </p>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <div class="disclaimer">
+      <b>Not investment advice.</b> Figures above come from a historical backtest and do not
+      guarantee future results. Funding rates, staking yields, and borrow costs are volatile and
+      can turn negative for extended periods. The strategy carries liquidation, smart-contract,
+      and counterparty risk.
+    </div>
+    <div>Data: Binance ETH-USDT funding · Aave/Compound USDC borrow (DeFi Llama) · CoinGecko ETH price. Backtest period: Jan 2022 – Mar 2026.</div>
+  </div>
+</footer>
+
+<script>
+  // ── Quarterly table ──────────────────────────────────────────────
+  const quarters = [
+    ["2022 Q1", 15.1], ["2022 Q2", 57.7], ["2022 Q3", -53.6], ["2022 Q4", 49.0],
+    ["2023 Q1", 30.2], ["2023 Q2", 37.5], ["2023 Q3", -21.7], ["2023 Q4", 7.9],
+    ["2024 Q1", 269.5], ["2024 Q2", -20.6], ["2024 Q3", 40.4], ["2024 Q4", 86.1],
+    ["2025 Q1", -35.5], ["2025 Q2", 39.8], ["2025 Q3", 27.9], ["2025 Q4", 162.9],
+    ["2026 Q1", 24.7],
+  ];
+  const tbody = document.getElementById("quarterly-tbody");
+  quarters.forEach(([label, apr]) => {
+    const tr = document.createElement("tr");
+    const cls = apr >= 0 ? "pos" : "neg";
+    tr.innerHTML = `<td class="q" style="padding:8px 12px;">${label}</td>
+                     <td class="${cls}" style="padding:8px 12px; text-align:right; font-family:ui-monospace,monospace;">${apr >= 0 ? "+" : ""}${apr.toFixed(1)}%</td>`;
+    tbody.appendChild(tr);
+  });
+
+  // ── Live PnL feed (Derive) ───────────────────────────────────────
+  // Expects a JSON snapshot shaped like:
+  // { "realized_pnl_usd": 1234.56, "open_notional_usd": 34000,
+  //   "funding_7d_usd": 88.1, "updated_at": "2026-08-05T09:00:00Z" }
+  // Published by a scheduled job that reads the Derive account —
+  // the browser never holds an API key.
+  async function loadLivePnl() {
+    const dot = document.getElementById("live-dot");
+    const text = document.getElementById("live-status-text");
+    try {
+      const res = await fetch("data/live_pnl.json", { cache: "no-store" });
+      if (!res.ok) throw new Error("no snapshot yet");
+      const d = await res.json();
+
+      const fmtUsd = (n) => (n >= 0 ? "+" : "−") + "$" + Math.abs(n).toLocaleString(undefined, { maximumFractionDigits: 0 });
+      document.getElementById("live-pnl").textContent = fmtUsd(d.realized_pnl_usd);
+      document.getElementById("live-pnl").className = "v " + (d.realized_pnl_usd >= 0 ? "pos" : "neg");
+      document.getElementById("live-notional").textContent = "$" + Number(d.open_notional_usd).toLocaleString(undefined, { maximumFractionDigits: 0 });
+      document.getElementById("live-funding-7d").textContent = fmtUsd(d.funding_7d_usd);
+      document.getElementById("live-funding-7d").className = "v " + (d.funding_7d_usd >= 0 ? "pos" : "neg");
+      document.getElementById("live-updated").textContent = new Date(d.updated_at).toLocaleString();
+
+      dot.className = "dot live";
+      text.innerHTML = `<b>Live.</b> Tracking the Derive account in real time.`;
+    } catch (e) {
+      dot.className = "dot off";
+      // Leave the "not yet connected" message in place.
+    }
+  }
+  loadLivePnl();
+</script>
+
+</body>
+</html>
